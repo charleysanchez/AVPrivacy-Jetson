@@ -105,7 +105,7 @@ def index():
       <head>
         <title>4-Stream Anon</title>
         <style>
-          img { width: 40%; height: auto; display: inline-block; }
+          img { width: 40cd%; height: auto; display: inline-block; }
         </style>
       </head>
       <body>
