@@ -207,6 +207,90 @@ To enable GPU acceleration in ONNX Runtime on Jetson Nano, you must install the 
 This setup avoids reliance on the unavailable `pypi.jetson-ai-lab.io` / `.dev` community endpoints by using NVIDIA's official distributions and manual source build for extensions. If you run into persistent build problems, consider deferring `torchvision` or using a container for development.
 
 
+## 11. Real-time RGB-D anonymization server (RealSense → Flask MJPEG)
+
+This script opens the Intel RealSense, runs the **AVPrivacyMasker** per frame, and publishes an **MJPEG** stream over HTTP. It keeps latency low by:
+
+- **Two threads:** a capture thread fills a lock-free buffer (`deque(maxlen=1)`), and a publisher thread runs detection → mask → anonymize → JPEG.
+- **Aligned RGB-D:** depth frames are aligned to color via `rs.align(rs.stream.color)` so mask pixels line up with RGB.
+- **Fast anonymization:** one full-frame mosaic + **copy only masked pixels** + bounded random noise; avoids per-pixel transforms on the full image.
+- **ONNX Runtime providers:** prefers TensorRT EP (if available), then CUDA, then CPU. Engines are cached to `~/.ort_trt_cache`.
+- **Warm-up:** a dummy inference once on startup builds TRT engines so the first live frame won’t stutter.
+
+### Run
+
+  ```bash
+  # from your project root
+  python3 feed.py --port 5001 --preview-width 640 --jpeg-quality 80
+
+  # Optional: save frames alongside the stream
+  python3 feed.py --save
+  ```
+
+#### SSH if remote
+
+  ```bash
+  ssh -L 5001:localhost:5001 <user>@<jetson-ip>
+  # then open http://localhost:5001/ on your browser
+  ```
+
+#### Command-line options:
+
+-	**--det-size:** detector input size (e.g., 640). Larger is slower but can improve small-face recall.
+-	**--depth-anon:** also add noise to depth where mask==1 (off by default).
+-	**--jpeg-quality:** 60–90 is a good range; higher = larger frames.
+-	**--preview-width:** resize for the stream only (does not change inference resolution).
+-	**--save:** write original/ and anon/ frames under images/session_<timestamp>_det-size<det>.
+
+#### Directory layout (when --save is on)
+
+    images/
+      session_YYYY-MM-DD_HH-MM-SS_det-size640/
+        original/  frame_<ms>.jpg
+        anon/      frame_<ms>.jpg
+
+
+### Performance notes (typical 640×480 on Jetson Nano/Orin)
+
+-	**Face detection (SCRFD via ORT+TensorRT):** ~16–20 ms
+-	**Mask construction (box-guided):** ~1–4 ms
+-	**Anonymize (fast mosaic+noise):** ~20 ms
+-	**End-to-end:** ~24–28 FPS (depends on load / provider)
+
+
+### Troubleshooting
+
+-	**No camera / RealSense error:** install librealsense2 and pyrealsense2; check realsense-viewer. Ensure udev rules are set.
+-	**CUDA provider missing:** confirm you installed onnxruntime-gpu for JetPack 6.2; ort.get_available_providers() should list CUDAExecutionProvider (and TensorrtExecutionProvider if present).
+-	**Port already in use:** pick another --port or kill the other process.
+-	**Stream choppy:** lower --jpeg-quality, use --preview-width 640, or reduce --det-size.
+
+**Security:** the Flask app has no auth. Keep it on a trusted network or use SSH tunneling / a reverse proxy with auth if you must expose it.
+
+---
+
+## 12. How the script works (quick walkthrough)
+
+- **CLI:** parses flags for save paths, detector size, stream quality, etc.
+- **Masker:** `AVPrivacyMasker(device="cuda", det_size=(N,N))` configures SCRFD and sets ORT providers (TensorRT → CUDA → CPU).
+- **RealSense:** starts a color (BGR8) and depth (Z16) pipeline at 640×480 @ 30 FPS; aligns depth to color.
+- **Warm-up:** a single `detect_faces()` call on a dummy frame triggers TRT engine build once.
+- **Capture thread:** grabs synchronized color+depth frames, writes into a one-slot queue (`deque(maxlen=1)`), always keeping the most recent frame.
+- **Publisher thread:**
+  1) `detect_faces(color)` → boxes  
+  2) `build_mask_numpy(depth, boxes, kernel, _calc_depth_profile)` → uint8 mask  
+  3) `fast_pixelate(color, mask)` → anonymized RGB  
+  4) JPEG encode and publish for **/view**
+- **Flask:** `/view` yields an MJPEG boundary stream with the newest JPEG in a simple loop.
+
+
+
+
+
+
+
+
+
 
 
 ---
