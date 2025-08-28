@@ -250,12 +250,48 @@ This script opens the Intel RealSense, runs the **AVPrivacyMasker** per frame, a
         anon/      frame_<ms>.jpg
 
 
-### Performance notes (typical 640×480 on Jetson Nano/Orin)
+# Jetson Nano Performance (JetPack 6.2 / CUDA 12.6)
 
--	**Face detection (SCRFD via ORT+TensorRT):** ~16–20 ms
--	**Mask construction (box-guided):** ~1–4 ms
--	**Anonymize (fast mosaic+noise):** ~20 ms
--	**End-to-end:** ~24–28 FPS (depends on load / provider)
+> Device: Jetson Nano 4GB • JP 6.2 (CUDA 12.6) • Python 3.10  
+> Input: 640×480 RGB-D @ 30 FPS • SCRFD (InsightFace) via ONNX Runtime (TensorRT → CUDA → CPU)  
+> Pipeline: detect → build mask (depth or box-only) → fast mosaic+noise → (optional) depth noise → JPEG
+
+## Latency breakdown (typical, per frame)
+| Stage                  | p50 (ms) | p90 (ms) |
+|---|---:|---:|
+| Face detection (SCRFD, det_size=640) | 16–20 | 20–24 |
+| Mask build (box-only)  | 1–2 | 3–4 |
+| Mask build (depth-guided) | 2–4 | 4–6 |
+| Anonymize (mosaic+noise) | 18–22 | 22–26 |
+| JPEG encode (quality 80) | 3–6 | 5–8 |
+| **End-to-end**          | **~38–45** | **~43–46** |
+
+**Throughput:** ~23–26 FPS at 640×480, depending on load/provider.
+
+## Quality (from recorded runs)
+| Metric | Value |
+|---|---:|
+| Dice (mean) | **0.827** |
+| Recall (mean) | **0.897** |
+
+Source: aggregate across sessions (see evaluation logs) with SCRFD + depth-guided masking.
+
+## Notes on mask mode
+- **Box-only masks:** fastest; robust when depth is missing; oval fill + padding to capture hair/forehead.
+- **Depth-guided masks:** tighter boundaries when depth is good; slightly higher CPU/GPU work.
+
+## Our parameters
+- Resolution: 640×480
+- Detector size: `det_size=(640,640)`
+- Anon params: `anon_block=16`, `anon_noise=20`
+- JPEG quality: 80
+
+## Tuning tips (trade-offs)
+- Lower `det_size` to **512** → +FPS, −small-face recall.
+- Increase `anon_block` (e.g., **24–32**) → faster, coarser mosaic.
+- Use **box-only** mask when depth is noisy/sparse.
+- Reduce JPEG quality or preview width for smoother streaming.
+- Ensure ORT providers: prefer **TensorRT (FP16)** → **CUDA** → **CPU**.
 
 
 ### Troubleshooting
